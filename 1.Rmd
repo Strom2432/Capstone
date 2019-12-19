@@ -1,0 +1,268 @@
+---
+title: "Public copy"
+author: "Rudy Nartker"
+date: "November 25, 2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library(readr)
+library(tidyverse)
+library(ggplot2)
+library(MASS)
+library(caret)
+library(readr)
+library(lubridate)
+cab <- read_csv("cab_rides.csv")
+weather <- read_csv("weather.csv")
+
+```
+
+Historically we've seen plenty of issues concerning search costs associated with transportation. In other words large portions of mark-up and inflation are capable because consumers aren't aware of all their options and competition is being stifled due to market obfuscation. The relevane in looking into some ways that one might use data science to bring consumer and producer closer together in terms of agreement on product price than ever before. 
+Going into this project I would like to focus on the idea that many things play an important role in determining price or which service people choose. There are more variables than I have had time to go over in this paper but the ones I have chosen hopefully will be adequate in explaining those assumptions.
+With this project. I had set out to find proftible patterns in the data associated with New York city ride sharing data. Which is at first a rather broad endeavor. One way in which I had intend to show my completion of this goal is by using QDA in order to define the types of cab one might call upon. 
+
+
+```{r}
+
+cab = na.omit(cab)
+cab = as.data.frame(cab)
+
+weather = as.data.frame(weather)
+
+cab[,3] = as.POSIXct(cab[,3]/1000, origin="1970-01-01")
+weather[,6] = as.POSIXct(weather[,6], origin="1970-01-01")
+```
+
+However before we can engage in a QDA there is a tremendous amount of cleaning that must be done. First we remove NA values, this causes a loss of about 8% of raw data, not huge but worth mentioning. Next we must make sure they are data frames and in a format that is usable by our functions, makes them into readable formats for us. Finally our time stamps are unreadable, though they are in the same format the one for the cab data frame is in mili-seconds and the one for the weather data frame is in seconds. 
+
+This does however create a new set of problems entirely. While date stamps are a useful tool when creating models they can also be a hinderance when it comes to merging the two data frames. If you wish to merge by date and you can't match because the seconds don't line up, then something must be done. So we split up the date by date, and by time of day.
+
+```{r}
+weather[,9] = format(as.POSIXct(strptime(weather$time_stamp, "%Y-%m-%d %H:%M:%S", tz="")) , format = "%H ")
+weather[,10] = format(as.POSIXct(strptime(weather$time_stamp, "%Y-%m-%d %H:%M:%S", tz="")) , format = "%Y-%m-%d")
+weather = weather[, -6]
+names(weather) = c("temp", "source", "clouds", "pressure", "rain", "humidity", "wind", "hour_stamp", "date_stamp")
+
+cab[,11] = format(as.POSIXct(strptime(cab$time_stamp, "%Y-%m-%d %H:%M:%S", tz="")) , format = "%H ")
+cab[,12] = format(as.POSIXct(strptime(cab$time_stamp, "%Y-%m-%d %H:%M:%S", tz="")) , format = "%Y-%m-%d")
+cab = cab[, -3]
+names(cab) = c("distance", "cab_type", "destination", "source", "price", "surge_multiplier","id", "product_id", "name", "hour_stamp", "date_stamp")
+
+cab = cab[, -8]
+cab = cab[, -3]
+bigstupiddf = merge(cab, weather, by = c("date_stamp", "source", "hour_stamp"))
+cleanBoi = distinct(bigstupiddf, bigstupiddf$id, .keep_all = T)
+cleanBoi = cleanBoi[, -8]
+
+head(cleanBoi)
+
+```
+
+After we do that we merge them together using Date, Time and Location. Then we filter out any extranious copies that the process may have made using the ID column which is unique to every ride. There we have our clean data and we can begin to work on our LDA and QDA.
+
+```{r}
+lyftsample = sample_n(filter(cleanBoi, cleanBoi$cab_type == 'Lyft'), (0.1*nrow(filter(cleanBoi, cleanBoi$cab_type == 'Lyft'))), replace = F)
+ubersample = sample_n(filter(cleanBoi, cleanBoi$cab_type == 'Uber'), (0.1*nrow(filter(cleanBoi, cleanBoi$cab_type == 'Uber'))), replace = F)
+cabsample = rbind(lyftsample, ubersample)
+```
+now we have the sample we're going to work with, this is a random sample of about half uber and half lyft. This was important to me for analysis sake we want to be sure that we don't accidentally end up with a skewed sample heavily favoring one company or another.
+
+```{r}
+numsample = select_if(cabsample, is.numeric)
+numsample[is.na(numsample)] = 0
+numsample[, 10] = cabsample$cab_type
+names(numsample) = c("distance", "price", "surge_multiplier", "temp", "clouds", "pressure", "rain", "humidity", "wind", "cab_type")
+
+```
+
+Here after cleaning re move everything we can't use for analysis. Such as ID number, Cab_type when analyzing name and vice versa. 
+
+```{r}
+Train = numsample$cab_type %>% createDataPartition(p = 0.8, list = F)
+training = numsample[Train, ]
+testing = numsample[-Train, ]
+
+preproc.param = training %>% preProcess(method = c("center", "scale"))
+training.trans = preproc.param %>% predict(training)
+testing.trans = preproc.param %>% predict(testing)
+
+model1 = lda(cab_type~., data=training.trans)
+predictions = model1 %>% predict(testing.trans)
+predictions$class = factor(predictions$class, levels=c("Uber", "Lyft"), ordered = T)
+mean(predictions$class == testing$cab_type)
+
+```
+
+Unfortunately the LDA is only slightly better than random accuracy... 53~54%. This is no better than random chance. Some of us may do better at predicting via total guess. However we do have the tools to attempt to analyze something with more categories. We take a new sample and begin preparing a new data frame for QDA. 
+
+```{r}
+lyftsample = sample_n(filter(cleanBoi, cleanBoi$cab_type == 'Lyft'), (0.2*nrow(filter(cleanBoi, cleanBoi$cab_type == 'Lyft'))), replace = F)
+ubersample = sample_n(filter(cleanBoi, cleanBoi$cab_type == 'Uber'), (0.2*nrow(filter(cleanBoi, cleanBoi$cab_type == 'Uber'))), replace = F)
+numsample = select_if(rbind(lyftsample, ubersample), is.numeric)
+
+
+numsample[is.na(numsample)] = 0
+numsample[, 10] = cabsample$name
+names(numsample) = c("distance", "price", "surge_multiplier", "temp", "clouds", "pressure", "rain", "humidity", "wind", "name")
+
+Train2 = numsample$name %>% createDataPartition(p = 0.8, list = F)
+training2 = numsample[Train2, ]
+testing2 = numsample[-Train2, ]
+
+preproc.param = training2 %>% preProcess(method = c("center", "scale"))
+training.trans = preproc.param %>% predict(training2)
+testing.trans = preproc.param %>% predict(testing2)
+
+
+model2 = qda(name~., data=training.trans)
+predictions = model2 %>%  predict(testing.trans)
+predictions$class = factor(predictions$class, levels = c("Lyft XL", "Lyft", "Lux Black XL", "Lux", "Lux Black", "Shared", "UberX", "UberXL", "UberPool", "Black", "WAV", "Black SUV"), ordered = T)
+mean(predictions$class == testing2$name)
+
+```
+
+Here we are our QDA, does NOT fair much better. However if you consider we "guess blindly" and are equally likely to be correct we are at nearly at double the expected accuracy. Next lets take a look at something a little more lean.
+
+```{r}
+bigCab = select_if(cab, is.numeric)
+bigCab[, 4] = cab$name
+names(bigCab) = c('distance', 'price', 'surge_multiplier', 'name')
+head(bigCab)
+
+
+bigCab = filter(bigCab, bigCab$name != "Black")
+bigCab = filter(bigCab, bigCab$name != "Black SUV")
+bigCab = filter(bigCab, bigCab$name != "Shared")
+bigCab = filter(bigCab, bigCab$name != "UberPool")
+bigCab = filter(bigCab, bigCab$name != "UberX")
+bigCab = filter(bigCab, bigCab$name != "UberXL")
+bigCab = filter(bigCab, bigCab$name != "WAV")
+
+
+Train3 = bigCab$name %>% createDataPartition(p = 0.8, list = F)
+training3 = bigCab[Train3, ]
+testing3 = bigCab[-Train3, ]
+
+preproc.param = training3 %>% preProcess(method = c("center", "scale"))
+training.trans3 = preproc.param %>% predict(training3)
+testing.trans3 = preproc.param %>% predict(testing3)
+
+model3 = qda(name~., data = training.trans3)
+predictions3 = model3 %>% predict(testing.trans3)
+predictions3$class = factor(predictions$class, levels = c("Lyft XL", "Lyft", "Lux Black XL", "Lux", "Lux Black"), ordered = T)
+predictions3$class = na.omit(predictions3$class)
+
+mean(predictions3$class == testing3$name)
+```
+
+Six classification of ride had to be discarded due to insuficient rank. Which seems strange considering the smaller sample did not have the same problem. I think the biggest problem whch we currently face is insufficient rank which happens to occur with nearly every single Uber service. The reason for this eludes me. additionally it may be worth noting that we an be constructing a model that is over fit. 
+This could be very useful because one could be able to develope a third party app that uses lyft and uber API's. In order to set "Maximum price, distance, party size, etc." specifications in addition to a destination. This app could then querey any local ride share app and classify that which would have the lowest price based on customer preferences and needs. Both Uber and Lyft could also use this inorder to querey eachother's prices and compete. 
+It could be also that one or both companies have already thought of this, and are using some sort of machine learning techniques in order to beat the other to the consumer with prices, deals, and deployment.
+
+However now i think there may be room to try and build a regression model in order to predict price. 
+```{r regression1}
+numsample = numsample[,-10]
+linModel1 = lm(price~., numsample)
+```
+
+Now lets try and make it a little more lean. using StepAIC we can peel back some variables. 
+```{r regression2}
+linModel2 = stepAIC(linModel1)
+summary(linModel2)
+```
+
+Holy Moly there are only Two Variables left. Distance and Surge Multiplier. Which make total sense that these do affect price. Lets take a closer look at these variables. This means we can reasonably assume weather has no statistically meaningful impact on price of ride sharing. Though the idea of Rain driving a price is interesting. Perhaps people will simply ride share less and plan on making fewer trips on days predicted to have bad weather?
+
+```{r anova}
+anova(linModel2)
+
+thing = filter(cleanBoi, surge_multiplier > 1)
+unique(thing$cab_type)
+```
+
+This is something i noticed when reading over the Kernals and other research people did on this that there are no surge multipliers in this data set atatched to Uber. This is frustrating from a modeling perspective because our model may dump ANY surge multiplier not set to 1 into a Lyft price point. 
+```{r}
+library(nnet)
+numsample = select_if(cleanBoi, is.numeric)
+numsample[is.na(numsample)] = 0
+
+targets = class.ind( c(rep("lyft", length(which(cleanBoi$name == 'Lyft'))), rep("Shared", length(which(cleanBoi$name == "Shared"))), rep("Lyft XL", length(which(cleanBoi$name == "Lyft XL"))),
+                        rep("Lux Black XL", length(which(cleanBoi$name == "Lux Black XL"))), rep("Lux", length(which(cleanBoi$name == "Lux"))),
+                        rep("Black", length(which(cleanBoi$name == "Black"))), rep("UberX", length(which(cleanBoi$name =="UberX"))), 
+                        rep("Lux Black", length(which(cleanBoi$name == "Lux Black"))), rep("WAV", length(which(cleanBoi$name == "WAV"))),
+                        rep("UberXL", length(which(cleanBoi$name == "UberXL"))), rep("UberPool", length(which(cleanBoi$name == "UberPool"))),
+                        rep("Black SUV", length(which(cleanBoi$name == "Black SUV")))))
+
+samp = c( sample(1:90749, 63525), sample(90750:181498, 63525), sample(181499:272247, 63524),
+          sample(272248:362995, 63525), sample(362996:453744, 63524), sample(453744:544493, 63524), 
+          sample(544494:635242, 63524))
+
+KobeBryant = nnet(numsample[samp,], targets[samp,], size = 4, decay = 5e-4, maxit=200)
+```
+
+This was our first attempet at a neural net, it seemed to have worked out alright with much debuging. A word to the wise . Most of these classification techniques require you to remove or reconfigure all of your data into some numeric format. As above we re assign all of the various types of cabs (i.e Uber, UberX, Lyft, LyftXL) to the target data frame and it's a binary predictor 1 for yes and 0 for no in each collumn. The Neural Net Package will attempt to coerce any non-numeric variables you have into numeric ones, which will then make them N/A's and then return an Error. These networks are incredibly iterative and when you have huge data sets it can be dificult to determine how to optimize them.
+
+```{r}
+MichaelJordan = nnet(numsample[samp,], targets[samp,], size = 20, decay = 5e-4, maxit=200)
+
+LeBronJames = nnet(numsample[samp,], targets[samp,], size = 40, decay = 5e-4, maxit=200)
+
+```
+
+```{ include = F}
+test.cl = function(true, pred) {
+  true = max.col(true)
+  cres = max.col(pred)
+  table(true, cres)
+}
+
+test.cl(targets[-samp,], predict(MichaelJordan, numsample[-samp,]))
+
+```
+
+As you can see above it's not necesarily the size of your hidden layer or even the number of iterations that determines the impact of the neural network. Sometimes fewer weights can allow for a more efficient learning process. There was additional calculations that I was unable to perform due to time restraints. This final cross tabulation calculates the predicted versus actual classifications of various sources of rides hailed. This would be a very interesting thing to delve into if we could train an ANN to appropriately identify which locations are which based off of several variables, especially if distance is one of those variables. Shorter more frequent trips in a densely packed area yield higher volume of customers. Knowing how to appropriately classify a location and/or distance based on variables like time of day, price, or even which cab they hailed can allow companies to deploy in a much more anticipatory mannor.
+
+```{r}
+april <- read_csv("Uber-Raw-April2014.csv")
+april = na.omit(april)
+
+if(!requireNamespace("devtools")) install.packages("devtools")
+devtools::install_github("dkahle/ggmap", ref = "tidyup", force=TRUE)
+library("ggmap", lib.loc="~/R/x86_64-pc-linux-gnu-library/3.4")
+
+ggmap::register_google(key='AIzaSyD4ljQVChZ97nFVssMNrRDeV3VqEY8WbbE')
+
+thing = ggmap(get_googlemap(center = c(lon = mean(april$Lon), lat = mean(april$Lat)), 
+                            zoom = 11, scale = 2, maptype = 'roadmap', color = 'color' ))
+
+thing + stat_density2d(aes(x = Lon, y = Lat, alpha = 0.01), 
+                       size = 0.005, bins = round(sqrt(nrow(april))), data = april, geom = 'polygon') 
+
+```
+
+Location to me mattered from the begining, I wanted to incorporate another data set and work at looking into the data in the same region. This is the same region at a different time. However there is a whole new set of problems associated with such a large data set and creating a heat map. I do not notice a reasonable difference in any change of alpha as an example. Additionally this is only a small piece of a data set that spans several months. This is only the month of april and it is incredibly hard to discern any patern other than, Manhattan. 
+
+```{r}
+## July now?
+july <- read_csv("uber-raw-data-jul14.csv")
+july = na.omit(july)
+thing2 = ggmap(get_googlemap(center = c(lon = mean(july$Lon), lat = mean(july$Lat)), 
+                            zoom = 11, scale = 2, maptype = 'roadmap', color = 'color' ))
+
+thing2 + stat_density2d(aes(x = Lon, y = Lat, alpha = 0.01), 
+                       size = 0.005, bins = round(sqrt(nrow(july))), data = july, geom = 'polygon')
+
+```
+
+
+We can see both in terms of dimensions and visualization that there are far more trips carried out in July than in April and while i wanted to visualize this for September as well R was having a very hard time rendering this. We can see in the map the area covered is MUCH larger and we can do some simple arrithmatic
+```{r}
+nrow(july)/nrow(april)
+```
+and we now know for sure that ride sharing between april and july have increased by about 40% month over month and when i check on my own they nearly double by september. I think this perfectly illustraits the importance of ride sharing in the modern day.
+
+What we've found here is that ride sharing is expanding very quickly. The models proposed may require some tuning. With such large data sets we may have to do a better job next time. As our methods are tuned to larger data they can still be confused by adding larger numbers of trivial data. 
+Anova revealed to us that weather seemed far less important than we had originally thought. 
